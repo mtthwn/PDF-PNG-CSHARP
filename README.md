@@ -13,3 +13,4 @@ Restore all dependencies then run the app in Visual Studio or Rider. You can upl
 - Perform conversions in memory (currently writing files to disk and cleaning up later)
 - Add async conversion (currently done synchronously)
 - Implement queue system to handle multiple uploads at a time
+- Breakdown of logic into separate files using OOP/MVC patterns
