@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -22,9 +23,8 @@ app.MapPost("/upload", async context =>
         using var memoryStream = new MemoryStream();
         await formFile.CopyToAsync(memoryStream);
 
-        var newFileName = formFile.FileName.Replace(".pdf", "");
-
         var tempFilePath = Path.GetTempFileName();
+        var uploadDirectory = $"uploads/{Path.GetFileNameWithoutExtension(formFile.FileName)}";
         await using (var stream = File.Create(tempFilePath))
         {
             await formFile.CopyToAsync(stream);
@@ -32,8 +32,10 @@ app.MapPost("/upload", async context =>
 
         try
         {
+            Directory.CreateDirectory(uploadDirectory);
             var pdfToPpm = "/opt/homebrew/bin/pdftoppm";
-            var programArguments = $"-png \"{tempFilePath}\" \"{newFileName}\"";
+            var programArguments =
+                $"-png \"{tempFilePath}\" \"{uploadDirectory}/{Path.GetFileNameWithoutExtension(formFile.FileName)}\"";
             var startInfo = new ProcessStartInfo
             {
                 RedirectStandardInput = true,
@@ -42,29 +44,41 @@ app.MapPost("/upload", async context =>
                 RedirectStandardError = true,
                 CreateNoWindow = true,
                 FileName = pdfToPpm,
-                Arguments = programArguments
+                Arguments = programArguments,
             };
 
             var process = Process.Start(startInfo);
 
             if (process == null) throw new Exception("Could not start process");
 
-            var readStdOutTask = process.StandardOutput.ReadToEndAsync();
             var readStdErrorTask = process.StandardError.ReadToEndAsync();
-
-            process.StandardOutput.BaseStream.CopyTo(context.Response.Body);
-
+            
             await process.WaitForExitAsync();
             var readStdError = await readStdErrorTask;
             var trimmedPdfToPpmErrorString = readStdError.Trim();
 
             if (process.ExitCode == 0)
             {
-                var result = await readStdOutTask;
-                await context.Response.WriteAsync(result);
+                var outputDirectory = $"uploads/{Path.GetFileNameWithoutExtension(formFile.FileName)}";
 
-                var imageBytes = File.ReadAllBytes($"{newFileName}-1.png");
-                await context.Response.Body.WriteAsync(imageBytes);
+                var pngFiles = Directory.GetFiles(outputDirectory, "*.png");
+                var result = new MemoryStream();
+                using (var archive = new ZipArchive(result, ZipArchiveMode.Create, true))
+
+                {
+                    foreach (var pngFile in pngFiles)
+                    {
+                        var entryName = Path.GetFileName(pngFile);
+                        archive.CreateEntryFromFile(pngFile, entryName, CompressionLevel.Fastest);
+                    }
+                }
+
+                result.Position = 0;
+                result.Seek(0, SeekOrigin.Begin);
+
+                context.Response.Headers.Add("Content-Disposition", "attachment; filename=images.zip");
+                context.Response.ContentType = "application/octet-stream";
+                await result.CopyToAsync(context.Response.Body);
             }
             else
             {
@@ -78,8 +92,7 @@ app.MapPost("/upload", async context =>
         }
         finally
         {
-            File.Delete(tempFilePath);
-            File.Delete($"{newFileName}-1.png");
+            Directory.Delete(uploadDirectory, true);
         }
     }
     else
